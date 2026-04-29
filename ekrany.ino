@@ -1,7 +1,7 @@
 
 #include <SPI.h>
 #include <TFT_eSPI.h>
-#include <WiFiManager.h>          // tablatronix/WiFiManager
+#include <WiFiManager.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -12,18 +12,14 @@
 #include <stdlib.h>
 #include "stops_data.h"
 
-// Pin sprzętowego resetu TFT (jak w działającym przykładzie z TFT_eSPI)
 #define TFT_RST_PIN 8
 
-// Dwa wyświetlacze na wspólnym SPI (ręczne CS, bo w User_Setup.h TFT_CS = -1)
-static constexpr int TFT_CS1_PIN = 5;   // ekran główny
-static constexpr int TFT_CS2_PIN = 17;  // ekran trasy
+static constexpr int TFT_CS1_PIN = 5;
+static constexpr int TFT_CS2_PIN = 17;
 
-// Rotacje dla dwóch fizycznych ekranów (u Ciebie drugi jest odwrócony)
-static constexpr uint8_t ROT_MAIN = 1;   // poziomo
-static constexpr uint8_t ROT_ROUTE = 3;  // poziomo, 180° (do góry nogami -> naprawa)
+static constexpr uint8_t ROT_MAIN = 1;
+static constexpr uint8_t ROT_ROUTE = 3;
 
-// Główny wyświetlacz + dotyk obsługiwany przez TFT_eSPI (piny w User_Setup)
 TFT_eSPI tft = TFT_eSPI();
 bool g_touchReady = false;
 bool g_touchPressedLast = false;
@@ -38,8 +34,7 @@ inline void selectDisplay(int csPin) {
     digitalWrite(csPin, LOW);
 }
 
-// XPT2046 calibration (raw ADC -> screen coords)
-// Ustaw te wartości po odczycie z Serial Monitora (dotknij rogi).
+// Touch calibration values measured from the raw XPT2046 controller output.
 static constexpr int16_t TOUCH_CAL_X_MIN = 300;
 static constexpr int16_t TOUCH_CAL_X_MAX = 3800;
 static constexpr int16_t TOUCH_CAL_Y_MIN = 300;
@@ -48,16 +43,14 @@ static constexpr bool TOUCH_SWAP_XY = false;
 static constexpr bool TOUCH_INVERT_X = true;
 static constexpr bool TOUCH_INVERT_Y = true;
 
-// Własne kolory (format RGB565)
-#define COLOR_BG      0xDF1E // Jasnoszary tła
-#define COLOR_CARD    0xFFFF // Biały (karty rozkładu)
-#define COLOR_TEXT    0x0000 // Czarny
-#define COLOR_RED     0xF800 // Czerwony (czas < 5 min)
-#define COLOR_ORANGE  0xFD20 // Pomaranczowy (czas 3-10 min)
-#define COLOR_ROUTE   0x7BEF // Ciemnoszary dla trasy
-#define COLOR_BTN     0x7BEF // Ciemnoszary przycisku
+#define COLOR_BG      0xDF1E
+#define COLOR_CARD    0xFFFF
+#define COLOR_TEXT    0x0000
+#define COLOR_RED     0xF800
+#define COLOR_ORANGE  0xFD20
+#define COLOR_ROUTE   0x7BEF
+#define COLOR_BTN     0x7BEF
 
-// SSID i haslo zarzadzane przez WiFiManager – brak hardcoded danych
 const char* API_BASE_URL = "https://api.zbiorkom.live/4.8/lublin/stops/getDepartures";
 const char* ROUTE_API_BASE_URL = "https://api.zbiorkom.live/4.8/lublin/routes/getRoute";
 const char* DEFAULT_STOP_ID = "brama-krakowska04";
@@ -106,8 +99,7 @@ const int STOP_MODAL_SCROLL_DOWN_Y = STOP_MODAL_Y + 158;
 const int STOP_MODAL_SCROLL_W = 24;
 const int STOP_MODAL_SCROLL_H = 24;
 
-// Prosty filtr po pierwszej literze nazwy przystanku (do szybkiego skoku w liście)
-char g_stopFilterLetter = 0; // 0 = brak filtra
+char g_stopFilterLetter = 0;
 
 struct DepartureEntry {
     String line;
@@ -167,7 +159,6 @@ unsigned long g_routeStartedMs = 0;
 volatile uint32_t g_routeRequestSeq = 0;
 uint32_t g_routeCacheUseCounter = 0;
 
-// --- PROTOTYPY FUNKCJI ---
 void drawTimetable(TFT_eSPI& tft);
 void drawTimetableData(TFT_eSPI& tft);
 void drawStatusBar(TFT_eSPI& tft);
@@ -231,18 +222,16 @@ String minuteLabel(int minutesToDeparture);
 uint16_t departureColor(int minutesToDeparture);
 bool lockRouteState(TickType_t timeoutTicks = portMAX_DELAY);
 void unlockRouteState();
-// --------------------------------------------------
 
-// ── Zapis/odczyt aktywnego przystanku w LittleFS ─────────────────────────────
 static const char* STOP_CONFIG_PATH = "/cfg_stop.txt";
 
 static void saveStop(const String& stopId) {
     File f = LittleFS.open(STOP_CONFIG_PATH, "w");
-    if (f) { f.print(stopId); f.close(); Serial.println("[CFG] Zapisano: " + stopId); }
-    else   { Serial.println("[CFG] Blad zapisu!"); }
+    if (f) { f.print(stopId); f.close(); Serial.println("[CFG] Saved stop: " + stopId); }
+    else   { Serial.println("[CFG] Failed to save stop."); }
 }
 
-// Wywolaj po loadStopsFromEmbeddedJson() i audioSetup() — potrzebuje LittleFS + listy przystankow
+// Load the previously selected stop after the embedded stop list and LittleFS are ready.
 static void loadStop() {
     String saved = DEFAULT_STOP_ID;
     if (LittleFS.exists(STOP_CONFIG_PATH)) {
@@ -254,17 +243,13 @@ static void loadStop() {
         g_activeStopId    = saved;
         g_activeStopLabel = stopIdToLabel(saved);
         g_activeStopIndex = idx;
-        Serial.println("[CFG] Przystanek: " + saved);
+        Serial.println("[CFG] Restored stop: " + saved);
     } else {
-        Serial.println("[CFG] Zapisany przystanek nie znaleziony, uzywam domyslnego.");
+        Serial.println("[CFG] Saved stop was not found, using the default.");
     }
 }
 
-// ── Detekcja odjazdow za <= 5 min → kolejka audio ────────────────────────────
-// Klucz: (linia + epoch zaokraglony do minuty).
-// isAnnounced uzywa tolerancji +/-4 minuty – dane realtime moga przesunac
-// czas odjazdu o 1-3 minuty miedzy odswiezeniami, co bez tolerancji
-// powodowalo ponowne (kaskadowe) ogloszenie tego samego kursu.
+// Track recently announced departures by line and rounded minute to avoid repeats.
 struct AnnKey { char line[12]; int32_t epochMin; };
 static const int ANN_CAP = 20;
 static AnnKey    s_announced[ANN_CAP];
@@ -274,7 +259,7 @@ static bool isAnnounced(const String& line, int64_t ep) {
     int32_t key = (int32_t)(ep / 60000LL);
     for (int i = 0; i < s_announcedN; i++) {
         if (!line.equals(s_announced[i].line)) continue;
-        // Tolerancja +/-4 minuty na przesunięcia czasu realtime z API
+        // Realtime updates can drift by a few minutes between refreshes.
         int32_t diff = s_announced[i].epochMin - key;
         if (diff < 0) diff = -diff;
         if (diff <= 4) return true;
@@ -298,7 +283,6 @@ static void pruneAnnounced() {
     s_announcedN = n;
 }
 
-// Wywolywana z loop() po kazdym odswiezeniu rozkladu
 static void checkDepartureAnnouncements() {
     if (!lockDepartures(pdMS_TO_TICKS(100))) return;
     pruneAnnounced();
@@ -307,7 +291,7 @@ static void checkDepartureAnnouncements() {
         int     mins = g_departures[i].minutesToDeparture;
         int64_t ep   = g_departures[i].departureEpochMs;
         if (mins > 0 && mins <= 5 && ep > 0 && !isAnnounced(g_departures[i].line, ep)) {
-            Serial.printf("[Ann] Linia %s za %d min\n",
+            Serial.printf("[Ann] Line %s in %d min\n",
                           g_departures[i].line.c_str(), mins);
             markAnnounced(g_departures[i].line, ep);
             audioEnqueue(g_departures[i].line);
@@ -317,72 +301,60 @@ static void checkDepartureAnnouncements() {
 }
 
 void setup() {
-    // CS piny HIGH natychmiast — zapobiega garbage SPI na wyswietlaczach podczas rozruchu
     pinMode(TFT_CS1_PIN, OUTPUT); digitalWrite(TFT_CS1_PIN, HIGH);
     pinMode(TFT_CS2_PIN, OUTPUT); digitalWrite(TFT_CS2_PIN, HIGH);
 
-    delay(1000); // stabilizacja zasilania (przed Serial.begin!)
+    delay(1000);
     Serial.begin(115200);
     delay(200);
 
-    // !! TYMCZASOWE - kasuje zapisane WiFi, usuń po teście !!
-    { WiFiManager _wm; _wm.resetSettings(); }
-    // !! KONIEC TYMCZASOWEGO !!
-
     Serial.println();
-    Serial.println("=== TestScreen boot (TFT_eSPI) ===");
+    Serial.println("=== Transit display boot (TFT_eSPI) ===");
 
-    // Ręczne CS dla 2 ekranów
     pinMode(TFT_CS1_PIN, OUTPUT);
     pinMode(TFT_CS2_PIN, OUTPUT);
     deselectDisplays();
 
-    // Twardy reset TFT (jak w działającym przykładzie z TFT_eSPI)
     pinMode(TFT_RST_PIN, OUTPUT);
     digitalWrite(TFT_RST_PIN, LOW);
     delay(100);
     digitalWrite(TFT_RST_PIN, HIGH);
-    delay(500); // kontroler TFT potrzebuje wiecej czasu na zimny start
+    delay(500);
 
-    // Inicjalizacja ekranu 1
     selectDisplay(TFT_CS1_PIN);
     tft.init();
-    tft.setRotation(ROT_MAIN); // Poziomo
+    tft.setRotation(ROT_MAIN);
 
-    // Inicjalizacja ekranu 2 (ten sam sterownik, inny CS)
     selectDisplay(TFT_CS2_PIN);
     tft.init();
-    tft.setRotation(ROT_ROUTE); // Poziomo (drugi ekran odwrócony)
+    tft.setRotation(ROT_ROUTE);
 
-    // Wracamy na ekran 1 jako domyślny
     selectDisplay(TFT_CS1_PIN);
     tft.setRotation(ROT_MAIN);
     initTouchScreen();
 
-    // Szybki test CS: każdy ekran dostaje inny kolor + napis.
-    // Dzięki temu od razu widać, czy CS1/CS2 nie są zamienione.
     selectDisplay(TFT_CS1_PIN);
     tft.fillScreen(TFT_RED);
     tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.drawString("SCREEN 1 (CS=5)", 20, 20, 4);
+    tft.drawString("EKRAN 1 (CS=5)", 20, 20, 4);
     delay(400);
 
     selectDisplay(TFT_CS2_PIN);
     tft.fillScreen(TFT_BLUE);
     tft.setTextColor(TFT_WHITE, TFT_BLUE);
-    tft.drawString("SCREEN 2 (CS=17)", 20, 20, 4);
+    tft.drawString("EKRAN 2 (CS=17)", 20, 20, 4);
     delay(400);
 
     selectDisplay(TFT_CS1_PIN);
 
     g_departuresMutex = xSemaphoreCreateMutex();
     if (g_departuresMutex == nullptr) {
-        Serial.println("Blad: nie udalo sie utworzyc mutexu danych");
+        Serial.println("Failed to create the departures mutex.");
     }
 
     g_routeMutex = xSemaphoreCreateMutex();
     if (g_routeMutex == nullptr) {
-        Serial.println("Blad: nie udalo sie utworzyc mutexu trasy");
+        Serial.println("Failed to create the route mutex.");
     }
 
     for (int i = 0; i < ROUTE_CACHE_SIZE; i++) {
@@ -394,20 +366,18 @@ void setup() {
     }
 
     if (!loadStopsFromEmbeddedJson()) {
-        Serial.println("Blad: nie udalo sie zaladowac listy przystankow");
+        Serial.println("Failed to load the embedded stop list.");
     }
 
-    audioSetup();  // init LittleFS + I2S (musi byc przed loadStop)
-    loadStop();    // wczytaj zapisany przystanek z LittleFS
+    audioSetup();
+    loadStop();
 
     clearDepartures();
 
-    // Renderowanie zawartości
     drawTimetable(tft);
     renderRouteScreenFromState();
 
     connectToWifi(20000);
-    // Odbuduj pełny ekran – WiFiManager w trybie AP czyścił ekran 1
     drawTimetable(tft);
     renderRouteScreenFromState();
     initClock();
@@ -488,7 +458,7 @@ void loop() {
         if (g_stopModalOpen) {
             drawStopSelectionModal(tft);
         }
-        checkDepartureAnnouncements(); // sprawdz czy ktores autobusy sa za <= 5 min
+        checkDepartureAnnouncements();
     }
 
     bool routeRenderNow = false;
@@ -507,9 +477,6 @@ void loop() {
     delay(50);
 }
 
-// ==========================================
-// FUNKCJA: Rysowanie lewego ekranu (Rozkład)
-// ==========================================
 void drawTimetable(TFT_eSPI& tft) {
     selectDisplay(TFT_CS1_PIN);
     tft.setRotation(ROT_MAIN);
@@ -521,7 +488,6 @@ void drawTimetable(TFT_eSPI& tft) {
         unlockDepartures();
     }
 
-    // Nagłówek
     tft.setTextColor(COLOR_TEXT);
     tft.setTextSize(1);
     tft.setCursor(10, 8);
@@ -669,17 +635,13 @@ void drawStopSelectionModal(TFT_eSPI& tft) {
     tft.setCursor(STOP_MODAL_CLOSE_X + 6, STOP_MODAL_CLOSE_Y + 5);
     tft.print("X");
 
-    // Pasek szybkiego wyboru litery (filtr pierwszej litery nazwy przystanku)
-    // Przeniesiony na dół modala, pod listę.
     int filterY = STOP_MODAL_LIST_Y + STOP_MODAL_VISIBLE_ROWS * STOP_MODAL_ROW_H + 2;
     int filterLabelX = STOP_MODAL_X + 10;
-    // Ustaw strzałki tuż za literą, zamiast przy prawym brzegu.
-    int filterPrevX = filterLabelX + 80; // trochę za napisem "LITERA:"
-    int filterNextX = filterPrevX + 26;  // obok "<"
+    int filterPrevX = filterLabelX + 80;
+    int filterNextX = filterPrevX + 26;
     int filterBtnW = 22;
     int filterBtnH = 16;
 
-    // Tło pod napisem
     tft.fillRect(filterLabelX, filterY, 140, filterBtnH, COLOR_CARD);
     tft.setTextColor(COLOR_TEXT);
     tft.setCursor(filterLabelX, filterY + 4);
@@ -691,13 +653,11 @@ void drawStopSelectionModal(TFT_eSPI& tft) {
         tft.print("-");
     }
 
-    // Przycisk poprzedniej litery "<"
     tft.fillRect(filterPrevX, filterY, filterBtnW, filterBtnH, COLOR_BG);
     tft.drawRect(filterPrevX, filterY, filterBtnW, filterBtnH, COLOR_TEXT);
     tft.setCursor(filterPrevX + 6, filterY + 4);
     tft.print("<");
 
-    // Przycisk następnej litery ">"
     tft.fillRect(filterNextX, filterY, filterBtnW, filterBtnH, COLOR_BG);
     tft.drawRect(filterNextX, filterY, filterBtnW, filterBtnH, COLOR_TEXT);
     tft.setCursor(filterNextX + 6, filterY + 4);
@@ -791,7 +751,6 @@ void handleStopModalTouch(int16_t touchX, int16_t touchY) {
         return;
     }
 
-    // Obszary przycisków filtra liter (na dole modala)
     int filterY = STOP_MODAL_LIST_Y + STOP_MODAL_VISIBLE_ROWS * STOP_MODAL_ROW_H + 2;
     int filterLabelX = STOP_MODAL_X + 10;
     int filterPrevX = filterLabelX + 80;
@@ -799,21 +758,18 @@ void handleStopModalTouch(int16_t touchX, int16_t touchY) {
     int filterBtnW = 22;
     int filterBtnH = 16;
 
-    // Poprzednia litera
     if (isPointInRect(touchX, touchY, filterPrevX, filterY, filterBtnW, filterBtnH)) {
         changeStopFilterLetter(-1);
         drawStopSelectionModal(tft);
         return;
     }
 
-    // Następna litera
     if (isPointInRect(touchX, touchY, filterNextX, filterY, filterBtnW, filterBtnH)) {
         changeStopFilterLetter(+1);
         drawStopSelectionModal(tft);
         return;
     }
 
-    // Kliknięcia poniżej linii filtra nie powinny wybierać wierszy.
     if (touchY >= filterY) {
         return;
     }
@@ -872,7 +828,7 @@ void selectStopByIndex(int index) {
         g_statusText = changed ? "Zmiana przystanku..." : "Przystanek bez zmian";
         if (changed) {
             clearDepartures();
-            saveStop(newStopId); // zapamietaj na wypadek restartu
+            saveStop(newStopId);
         }
         unlockDepartures();
     } else {
@@ -932,8 +888,7 @@ void changeStopFilterLetter(int delta) {
         if (letter < 'A') letter = 'Z';
     }
 
-    // Jezeli dana litera nie ma przystankow, przeskocz do kolejnej ktora ma
-    // (max 26 prob zeby nie zapetlic sie przy pustym slowniku)
+    // Skip empty letters so the filter always lands on a populated section.
     char startLetter = letter;
     for (int tries = 0; tries < 26; tries++) {
         int idx = findFirstStopIndexByLetter(letter);
@@ -948,7 +903,7 @@ void changeStopFilterLetter(int delta) {
         letter = static_cast<char>(letter + delta);
         if (letter > 'Z') letter = 'A';
         if (letter < 'A') letter = 'Z';
-        if (letter == startLetter) break; // okrazylismy caly alfabet
+        if (letter == startLetter) break;
     }
 }
 
@@ -986,7 +941,7 @@ bool addStopIdIfUnique(const String& stopId) {
 
 bool loadStopsFromEmbeddedJson() {
     const char* dataStart = stops_json_data;
-    const char* dataEnd = stops_json_data + (sizeof(stops_json_data) - 1); // bez '\0'
+    const char* dataEnd = stops_json_data + (sizeof(stops_json_data) - 1);
     if (dataStart == nullptr || dataEnd == nullptr || dataEnd <= dataStart) {
         return false;
     }
@@ -1049,17 +1004,15 @@ bool loadStopsFromEmbeddedJson() {
         g_activeStopLabel = stopIdToLabel(g_activeStopId);
     }
 
-    Serial.printf("Przystanki: parsed=%d unique=%d duplicates=%d\n", parsedCount, g_stopCount, duplicates);
+    Serial.printf("Stops parsed=%d unique=%d duplicates=%d\n", parsedCount, g_stopCount, duplicates);
     return g_stopCount > 0;
 }
 
 void drawDepartureCard(TFT_eSPI& tft, int index, const String& line, const String& dir, const String& timeStr, uint16_t timeColor) {
     int yPos = 40 + (index * 40);
     
-    // Białe tło karty
     tft.fillRoundRect(10, yPos, 300, 35, 3, COLOR_CARD);
-    
-    // Numer linii
+
     int lineLen = static_cast<int>(line.length());
     int lineTextSize = (lineLen >= 3) ? 2 : 3;
     int lineCharWidth = 6 * lineTextSize;
@@ -1071,7 +1024,6 @@ void drawDepartureCard(TFT_eSPI& tft, int index, const String& line, const Strin
     tft.setCursor(lineX, lineY);
     tft.print(line);
 
-    // Kierunek
     int directionX = lineX + (lineLen * lineCharWidth) + 8;
     if (directionX < 72) {
         directionX = 72;
@@ -1081,7 +1033,7 @@ void drawDepartureCard(TFT_eSPI& tft, int index, const String& line, const Strin
     }
 
     const int timeX = 236;
-    int maxDirectionChars = (timeX - directionX - 6) / 12; // size=2, font 6px
+    int maxDirectionChars = (timeX - directionX - 6) / 12;
     if (maxDirectionChars < 4) {
         maxDirectionChars = 4;
     }
@@ -1098,14 +1050,12 @@ void drawDepartureCard(TFT_eSPI& tft, int index, const String& line, const Strin
     tft.setCursor(directionX, yPos + 16);
     tft.print(safeDir);
 
-    // Czas
     tft.setTextColor(timeColor);
     
     tft.setCursor(timeX, yPos + 10);
     tft.print(timeStr);
 }
 
-// Wyswietla napis na ekranie 1 (info WiFi)
 static void showWifiScreen(const String& line1, const String& line2 = "", const String& line3 = "") {
     selectDisplay(TFT_CS1_PIN);
     tft.setRotation(ROT_MAIN);
@@ -1133,10 +1083,9 @@ bool connectToWifi(uint32_t timeoutMs) {
     WiFiManager wm;
     wm.setConnectTimeout(timeoutMs / 1000);
 
-    // Tryb AP – pokazuje info na ekranie
     wm.setAPCallback([](WiFiManager* wm) {
         String apIP = WiFi.softAPIP().toString();
-        Serial.println("[WiFi] Tryb AP, IP: " + apIP);
+        Serial.println("[WiFi] AP mode active, IP: " + apIP);
         showWifiScreen("Brak sieci WiFi",
                        "Polacz z:",
                        "SSID: AutorBus-Setup  IP: " + apIP);
@@ -1145,7 +1094,7 @@ bool connectToWifi(uint32_t timeoutMs) {
         tft.fillScreen(COLOR_BG);
         tft.setTextColor(COLOR_TEXT);
         tft.setTextSize(1);
-        tft.setCursor(10, 20); tft.print("WiFi Setup");
+        tft.setCursor(10, 20); tft.print("Konfiguracja WiFi");
         tft.setCursor(10, 40); tft.print("SSID: AutorBus-Setup");
         tft.setCursor(10, 56); tft.print("Adres: " + apIP);
     });
@@ -1153,15 +1102,14 @@ bool connectToWifi(uint32_t timeoutMs) {
     bool connected = wm.autoConnect("AutorBus-Setup");
 
     if (connected) {
-        // Wymuś tryb STA – upewniamy się że AP jest wyłączony
-        // (zwalnia zasoby radio i zapobiega zakłócaniu audio)
+        // Force STA mode so the temporary access point is fully shut down.
         WiFi.mode(WIFI_STA);
-        Serial.print("[WiFi] OK STA, IP: ");
+        Serial.print("[WiFi] Connected in STA mode, IP: ");
         Serial.println(WiFi.localIP());
         return true;
     }
 
-    Serial.println("[WiFi] Nie udalo sie polaczyc.");
+    Serial.println("[WiFi] Connection failed.");
     showWifiScreen("Brak WiFi", "Tryb offline");
     delay(1500);
     return false;
@@ -1176,9 +1124,9 @@ void initClock() {
     }
 
     if (isClockSynced()) {
-        Serial.println("Zegar zsynchronizowany (NTP).");
+        Serial.println("Clock synchronized via NTP.");
     } else {
-        Serial.println("Brak synchronizacji NTP - liczenie minut moze byc ograniczone.");
+        Serial.println("NTP synchronization failed; minute countdowns may be limited.");
     }
 }
 
@@ -1188,7 +1136,7 @@ bool isClockSynced() {
 
 void initTouchScreen() {
     g_touchReady = true;
-    Serial.println("Touch panel (TFT_eSPI) gotowy");
+    Serial.println("Touch panel (TFT_eSPI) ready.");
 }
 
 void handleTouchInput() {
@@ -1201,7 +1149,6 @@ void handleTouchInput() {
     bool touched = readTouchScreenPoint(touchX, touchY);
 
     if (touched && !g_touchPressedLast) {
-        // Wszelkie rysowanie UI wykonujemy na ekranie 1
         selectDisplay(TFT_CS1_PIN);
         tft.setRotation(ROT_MAIN);
 
@@ -1255,9 +1202,7 @@ void handleTouchInput() {
 }
 
 bool readTouchScreenPoint(int16_t& x, int16_t& y) {
-    // Dotyk jest na osobnym CS (TOUCH_CS w User_Setup),
-    // a ekrany TFT mają ręczne CS. Na czas odczytu dotyku
-    // odznaczamy oba wyświetlacze.
+    // The touch controller uses its own CS line, so both TFT displays must be deselected first.
     deselectDisplays();
 
     uint16_t tx = 0;
@@ -1266,24 +1211,19 @@ bool readTouchScreenPoint(int16_t& x, int16_t& y) {
         return false;
     }
 
-    // Ekran pracuje w orientacji poziomej (setRotation(1)).
-    // Z Twojego opisu wynika, że osie są odbite w poziomie,
-    // więc odwracamy X względem szerokości ekranu.
-    int16_t w = tft.width();   // 320
-    int16_t h = tft.height();  // 240
+    int16_t w = tft.width();
+    int16_t h = tft.height();
 
     int16_t mappedX = static_cast<int16_t>(tx);
     int16_t mappedY = static_cast<int16_t>(ty);
 
-    // Odbicie w poziomie (jak wcześniej)
+    // Mirror the X axis to match the physical panel orientation.
     mappedX = (w - 1) - mappedX;
 
-    // Globalne przesunięcie X w prawo, żeby recty przycisków
-    // pokrywały się z tym, gdzie faktycznie dotykasz.
+    // Apply the measured offset so touch targets line up with the UI.
     const int16_t offsetX = 15;
     mappedX += offsetX;
 
-    // Na wszelki wypadek zadbajmy o zakres.
     mappedX = constrain(mappedX, 0, w - 1);
     mappedY = constrain(mappedY, 0, h - 1);
 
@@ -1886,7 +1826,7 @@ bool fetchAndPrepareRoute(const String& line, const String& requestedDirection, 
     String url = String(ROUTE_API_BASE_URL) + "?id=" + line;
     Serial.print("GET ");
     Serial.println(url);
-    Serial.print("Trasa request: line=");
+    Serial.print("Route request: line=");
     Serial.print(line);
     Serial.print(" direction=");
     Serial.println(requestedDirection);
@@ -1931,7 +1871,7 @@ bool fetchAndPrepareRoute(const String& line, const String& requestedDirection, 
 
     if (error) {
         outStatusText = "JSON trasy " + String(error.c_str()) + " len=" + (contentLength >= 0 ? String(contentLength) : String("?")) + " linia " + line;
-        Serial.print("Blad JSON trasy: ");
+        Serial.print("Route JSON error: ");
         Serial.println(error.c_str());
         return false;
     }
@@ -1969,7 +1909,7 @@ bool fetchAndPrepareRoute(const String& line, const String& requestedDirection, 
 
     if (variants.size() == 0) {
         outStatusText = "Brak wariantow trasy linia " + line + " root=" + String(root.size());
-        Serial.print("Brak wariantow trasy. line=");
+        Serial.print("No route variants found. line=");
         Serial.print(line);
         Serial.print(" rootSize=");
         Serial.println(root.size());
@@ -2078,7 +2018,6 @@ void drawRoutePlaceholder(TFT_eSPI& tft, const String& title, const String& mess
         }
     }
 
-    // Zostawmy stan bezpieczny dla reszty UI
     selectDisplay(TFT_CS1_PIN);
 }
 
@@ -2127,7 +2066,6 @@ void renderRouteScreenFromState() {
     getCurrentTimeDate(currentTime, currentDate);
     drawRouteScreen(tft, localLine, localStops, localCount, currentTime, currentDate);
 
-    // Po narysowaniu trasy wracamy na ekran 1 jako domyślny
     selectDisplay(TFT_CS1_PIN);
 }
 
@@ -2137,12 +2075,12 @@ bool fetchDeparturesFromApi(int limit) {
         activeStopId = g_activeStopId;
         unlockDepartures();
     } else {
-        Serial.println("Blad: nie moge odczytac aktywnego przystanku");
+        Serial.println("Failed to read the active stop.");
         return false;
     }
 
     if (activeStopId.length() == 0) {
-        Serial.println("Blad: pusty aktywny przystanek");
+        Serial.println("Active stop id is empty.");
         return false;
     }
 
@@ -2151,11 +2089,11 @@ bool fetchDeparturesFromApi(int limit) {
     Serial.println(url);
 
     WiFiClientSecure client;
-    client.setInsecure(); // Szybki prototyp; docelowo warto dodac walidacje certyfikatu.
+    client.setInsecure(); // Certificate validation can be added later if the deployment needs it.
 
     HTTPClient http;
     if (!http.begin(client, url)) {
-        Serial.println("HTTP begin nieudany");
+        Serial.println("HTTP begin failed.");
         return false;
     }
 
@@ -2177,26 +2115,26 @@ bool parseDeparturesPayload(const String& payload) {
     DynamicJsonDocument doc(16384);
     DeserializationError error = deserializeJson(doc, payload);
     if (error) {
-        Serial.print("Blad JSON: ");
+        Serial.print("JSON error: ");
         Serial.println(error.c_str());
         return false;
     }
 
     if (!doc.is<JsonArray>()) {
-        Serial.println("Nieoczekiwany format API (root nie jest tablica).");
+        Serial.println("Unexpected API format: root is not an array.");
         return false;
     }
 
     JsonArray root = doc.as<JsonArray>();
     if (root.size() < 2 || !root[1].is<JsonArray>()) {
-        Serial.println("Nieoczekiwany format API (brak listy odjazdow).");
+        Serial.println("Unexpected API format: departures array is missing.");
         return false;
     }
 
     JsonArray departuresRaw = root[1].as<JsonArray>();
 
     if (!lockDepartures(pdMS_TO_TICKS(200))) {
-        Serial.println("Blad: mutex danych zajety, pomijam aktualizacje");
+        Serial.println("Departures mutex is busy, skipping the refresh.");
         return false;
     }
 
@@ -2259,7 +2197,7 @@ bool parseDeparturesPayload(const String& payload) {
     int parsed = countValidDeparturesUnlocked();
     unlockDepartures();
 
-    Serial.print("Odebrane odjazdy: ");
+    Serial.print("Departures parsed: ");
     Serial.println(parsed);
     return parsed > 0;
 }
@@ -2272,7 +2210,7 @@ int64_t extractRealtimeDepartureMs(JsonArray timing) {
         }
     }
 
-    // Fallback tylko gdy brak rzeczywistego czasu w odpowiedzi.
+    // Fall back to the planned departure only when realtime data is missing.
     if (timing.size() > 0 && isNumericJson(timing[0])) {
         int64_t plannedMs = jsonToInt64(timing[0]);
         if (plannedMs > 0) {
@@ -2376,25 +2314,25 @@ bool isNumericJson(JsonVariant value) {
 String normalizePolishText(const String& text) {
     String normalized = text;
 
-    // UTF-8 polskie znaki -> ASCII (domyslna czcionka Adafruit_GFX nie obsluguje tych glifow).
-    normalized.replace("\xC4\x84", "A"); // Ą
-    normalized.replace("\xC4\x85", "a"); // ą
-    normalized.replace("\xC4\x86", "C"); // Ć
-    normalized.replace("\xC4\x87", "c"); // ć
-    normalized.replace("\xC4\x98", "E"); // Ę
-    normalized.replace("\xC4\x99", "e"); // ę
-    normalized.replace("\xC5\x81", "L"); // Ł
-    normalized.replace("\xC5\x82", "l"); // ł
-    normalized.replace("\xC5\x83", "N"); // Ń
-    normalized.replace("\xC5\x84", "n"); // ń
-    normalized.replace("\xC3\x93", "O"); // Ó
-    normalized.replace("\xC3\xB3", "o"); // ó
-    normalized.replace("\xC5\x9A", "S"); // Ś
-    normalized.replace("\xC5\x9B", "s"); // ś
-    normalized.replace("\xC5\xB9", "Z"); // Ź
-    normalized.replace("\xC5\xBA", "z"); // ź
-    normalized.replace("\xC5\xBB", "Z"); // Ż
-    normalized.replace("\xC5\xBC", "z"); // ż
+    // The default Adafruit_GFX font does not contain Polish glyphs, so map them to ASCII.
+    normalized.replace("\xC4\x84", "A");
+    normalized.replace("\xC4\x85", "a");
+    normalized.replace("\xC4\x86", "C");
+    normalized.replace("\xC4\x87", "c");
+    normalized.replace("\xC4\x98", "E");
+    normalized.replace("\xC4\x99", "e");
+    normalized.replace("\xC5\x81", "L");
+    normalized.replace("\xC5\x82", "l");
+    normalized.replace("\xC5\x83", "N");
+    normalized.replace("\xC5\x84", "n");
+    normalized.replace("\xC3\x93", "O");
+    normalized.replace("\xC3\xB3", "o");
+    normalized.replace("\xC5\x9A", "S");
+    normalized.replace("\xC5\x9B", "s");
+    normalized.replace("\xC5\xB9", "Z");
+    normalized.replace("\xC5\xBA", "z");
+    normalized.replace("\xC5\xBB", "Z");
+    normalized.replace("\xC5\xBC", "z");
 
     return normalized;
 }
@@ -2422,27 +2360,21 @@ uint16_t departureColor(int minutesToDeparture) {
     return COLOR_TEXT;
 }
 
-// ==========================================
-// FUNKCJA: Rysowanie prawego ekranu (Trasa z automatycznym skalowaniem)
-// ==========================================
 void drawRouteScreen(TFT_eSPI& tft, const String& lineNumber, String stops[], int numStops, String currentTime, String currentDate) {
     selectDisplay(TFT_CS2_PIN);
     tft.setRotation(ROT_ROUTE);
     tft.fillScreen(COLOR_BG);
 
-    // Nagłówek
     tft.setTextColor(COLOR_TEXT);
     tft.setTextSize(2);
     tft.setCursor(10, 10);
     tft.print("TRASA LINII ");
     tft.print(lineNumber);
 
-    // Dynamiczny layout: cała przestrzeń jest na trasę (bez zegara/dat).
     int maxCols = 5;
     int safeStops = max(numStops, 1);
     int numRows = (safeStops - 1) / maxCols + 1;
 
-    // Granice obszaru trasy.
     const int routeTop = 58;
     const int routeBottomLimit = 230;
     int startY = routeTop;
@@ -2465,24 +2397,19 @@ void drawRouteScreen(TFT_eSPI& tft, const String& lineNumber, String stops[], in
         }
     }
 
-    // Rysowanie dynamicznej trasy z nowymi parametrami
     drawDynamicRoute(tft, stops, numStops, startY, stepY, maxCols);
 }
 
-// ==========================================
-// Algorytm rysujący wężyk punktów (Zaktualizowany)
-// ==========================================
 void drawDynamicRoute(TFT_eSPI& tft, String stops[], int numStops, int startY, int stepY, int maxCols) {
     selectDisplay(TFT_CS2_PIN);
     tft.setRotation(ROT_ROUTE);
-    // NAPRAWA BŁĘDU: Zwiększamy startX z 25 na 35, aby tekst nie wychodził poza ekran z lewej strony
+    // Leave extra space on the left so the first stop label stays visible.
     int startX = 35;
-    int stepX = 60; // Stała szerokość między kropkami
+    int stepX = 60;
 
     int prevX = -1, prevY = -1;
     const bool denseLayout = stepY < 26;
 
-    // KROK 1: Rysowanie linii
     for (int i = 0; i < numStops; i++) {
         int row = i / maxCols;
         int col = i % maxCols;
@@ -2500,7 +2427,6 @@ void drawDynamicRoute(TFT_eSPI& tft, String stops[], int numStops, int startY, i
         prevY = y;
     }
 
-    // KROK 2: Rysowanie kropek i tekstów
     for (int i = 0; i < numStops; i++) {
         int row = i / maxCols;
         int col = i % maxCols;
@@ -2509,15 +2435,13 @@ void drawDynamicRoute(TFT_eSPI& tft, String stops[], int numStops, int startY, i
         int x = startX + (col * stepX);
         int y = startY + (row * stepY);
 
-        // Kropka pomniejszona przy gęstym układzie
         tft.fillCircle(x, y, denseLayout ? 3 : 5, COLOR_ROUTE);
 
         tft.setTextSize(1);
         tft.setTextColor(COLOR_TEXT);
         
-        // Zabezpieczenie na wypadek długich nazw (przy gęstym układzie skracamy bardziej)
         String stopName = stops[i];
-        int maxLen = denseLayout ? 7 : 9; // 7 -> 6 + "."
+        int maxLen = denseLayout ? 7 : 9;
         if (stopName.length() > maxLen) {
             stopName = stopName.substring(0, maxLen - 1) + ".";
         }
@@ -2525,7 +2449,6 @@ void drawDynamicRoute(TFT_eSPI& tft, String stops[], int numStops, int startY, i
         int textX = 0;
         int textY = 0;
         if (denseLayout) {
-            // Gęsty układ: rysuj nazwę z boku kropki (eliminuje nakładanie w pionie)
             const int textW = static_cast<int>(stopName.length()) * 6;
             const bool snakeGoesRight = (row % 2 == 0);
             if (snakeGoesRight) {
@@ -2535,13 +2458,11 @@ void drawDynamicRoute(TFT_eSPI& tft, String stops[], int numStops, int startY, i
             }
             textY = y - 4;
         } else {
-            // Rzadszy układ: nad/pod jak wcześniej
             textX = x - (stopName.length() * 3);
             if (textX < 5) textX = 5;
             textY = (i % 2 == 0) ? (y - 12) : (y + 10);
         }
 
-        // Przytnij do ekranu
         if (textX < 0) textX = 0;
         if (textX > tft.width() - 1) textX = tft.width() - 1;
         if (textY < 0) textY = 0;

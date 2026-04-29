@@ -1,6 +1,6 @@
 #pragma once
 
-// Słowo PROGMEM trzyma ten wielki tekst w pamięci Flash, żeby nie zapchać RAMu
+// Store the embedded stop list in flash so it does not consume scarce RAM.
 const char stops_json_data[] PROGMEM = R"rawjson(
 
 {
