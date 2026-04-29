@@ -123,4 +123,20 @@ Recommended additions for the GitHub page:
 - Source comments and diagnostics are kept in English for maintainability.
 - Stop names and route labels are preserved from the project data and remote API payloads.
 
+## Acknowledgements / Data Source
+
+This project uses the public API provided by
+[zbiorkom.live](https://zbiorkom.live) /
+[zbiorkom.live on GitHub](https://github.com/DomeQdev/zbiorkom.live).
+
+zbiorkom.live is created by Dominik Skarżyński and licensed under the MIT License.
+This project only consumes the publicly available API and does not include or reuse
+any source code from zbiorkom.live.
+
+This project is not affiliated with, endorsed by, or officially supported by
+zbiorkom.live or its authors.
+
+To be respectful of the free hosting used by the API, this device limits requests
+and avoids unnecessary polling.
+
 ## Demo Ideas
